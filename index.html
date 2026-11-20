@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chapter Election</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--ink:#1d1d1b;--mute:#6b6a65;--line:#dedcd4;--acc:#2f4f8f;--acc-ink:#fff;--ok:#2d7a4b;--bad:#a33a2f}
+@media (prefers-color-scheme:dark){:root{--bg:#171716;--card:#222220;--ink:#eeede8;--mute:#a09f98;--line:#3a3a36;--acc:#7f9fe0;--acc-ink:#111;--ok:#5fbf85;--bad:#e07a6e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:680px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:1.5rem;margin:0 0 4px}h2{font-size:1.05rem;margin:0 0 10px}
+.sub{color:var(--mute);margin:0 0 18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:10px 14px}
+button.p{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:600}
+button:disabled{opacity:.45;cursor:default}
+.cand{display:block;width:100%;text-align:left;margin-bottom:8px}
+.num{min-width:28px;height:28px;border-radius:50%;background:var(--acc);color:var(--acc-ink);display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:.9rem}
+.row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.row .name{flex:1;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
+.sm{padding:6px 10px}
+input,textarea{font:inherit;width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);margin-bottom:10px}
+.msg{color:var(--mute);font-size:.92rem}.err{color:var(--bad)}.ok{color:var(--ok)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+td.l{text-align:left;white-space:normal;word-break:break-all}
+.out{color:var(--bad);text-decoration:line-through}.win{color:var(--ok);font-weight:700}
+.bar{height:8px;background:var(--line);border-radius:4px;margin-top:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
+.tag{display:inline-block;font-size:.75rem;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--mute);margin-left:6px;vertical-align:middle}
+a{color:var(--acc)}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+// ====== PASTE YOUR SUPABASE VALUES HERE (Project Settings > API) ======
+var SUPABASE_URL = 'YOUR_SUPABASE_URL';
+var SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+// ======================================================================
+
+var app = document.getElementById('app');
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function $(id){return document.getElementById(id)}
+
+// Instant-runoff tally. Ties for last place: fewest first-choice votes loses, then alphabetical.
+function tally(bs,cands){
+  var active=cands.slice(),rounds=[],first={};
+  cands.forEach(function(c){first[c]=0});
+  bs.forEach(function(b){if(first[b[0]]!==undefined)first[b[0]]++});
+  while(true){
+    var counts={};active.forEach(function(c){counts[c]=0});
+    var used=0;
+    bs.forEach(function(b){for(var i=0;i<b.length;i++){if(counts[b[i]]!==undefined){counts[b[i]]++;used++;break}}});
+    var r={counts:counts,total:used,exhausted:bs.length-used,out:null,winner:null};
+    rounds.push(r);
+    if(used===0)break;
+    var top=active.slice().sort(function(a,b){return counts[b]-counts[a]})[0];
+    if(counts[top]*2>used||active.length===1){r.winner=top;break}
+    var min=Math.min.apply(null,active.map(function(c){return counts[c]}));
+    var lows=active.filter(function(c){return counts[c]===min}).sort(function(a,b){return first[a]-first[b]||(a<b?-1:1)});
+    r.out=lows[0];active=active.filter(function(c){return c!==lows[0]});
+  }
+  return {rounds:rounds,winner:rounds[rounds.length-1].winner,ballots:bs.length};
+}
+function resultsHTML(res){
+  if(!res)return '<p class="msg">No results recorded.</p>';
+  var h='<div class="card"><h2>Results <span class="tag">'+res.ballots+' ballots</span></h2>';
+  h+=res.winner?'<p class="win">Winner: '+esc(res.winner)+'</p>':'<p class="msg">No valid ballots were cast.</p>';
+  res.rounds.forEach(function(r,i){
+    h+='<div class="scroll"><table><tr><th>Round '+(i+1)+'</th><th>Votes</th></tr>';
+    Object.keys(r.counts).sort(function(a,b){return r.counts[b]-r.counts[a]}).forEach(function(c){
+      var cls=c===r.out?'out':(c===r.winner?'win':'');
+      var pct=r.total?Math.round(r.counts[c]/r.total*100):0;
+      h+='<tr><td class="'+cls+'">'+esc(c)+'<div class="bar"><i style="width:'+pct+'%"></i></div></td><td class="'+cls+'">'+r.counts[c]+' ('+pct+'%)</td></tr>';
+    });
+    h+='</table></div><p class="msg">'+(r.exhausted?r.exhausted+' ballot(s) exhausted. ':'')+(r.out?esc(r.out)+' eliminated.':'')+'</p>';
+  });
+  return h+'</div>';
+}
+
+if(SUPABASE_URL.indexOf('YOUR_')===0){
+  app.innerHTML='<h1>Almost there</h1><p class="sub">Open index.html and paste your Supabase URL and anon key at the top of the script.</p>';
+}else{
+  var sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+  var params=new URLSearchParams(location.search);
+  if(params.get('code'))voter(params.get('code'));
+  else if(location.hash==='#admin')admin();
+  else app.innerHTML='<h1>Chapter Election</h1><p class="sub">Open the personal voting link you were sent.</p><p class="msg"><a href="#admin" onclick="setTimeout(function(){location.reload()},0)">Admin login</a></p>';
+}
+
+// ---------------- Voter ----------------
+async function voter(code){
+  var info=null,ranking=[],note='',busy=false,done=false;
+  app.innerHTML='<p class="msg">Loading…</p>';
+  var r=await sb.rpc('get_ballot_info',{p_code:code});
+  if(r.error){app.innerHTML='<p class="err">Couldn’t reach the server. Try again in a moment.</p>';return}
+  info=r.data;
+  function draw(){
+    if(!info){app.innerHTML='<h1>Chapter Election</h1><p class="err">This voting link isn’t valid. Check that you copied the whole link.</p>';return}
+    var h='<h1>'+esc(info.title)+'</h1>';
+    if(info.status==='closed'){app.innerHTML=h+'<p class="sub">Voting is closed.</p>'+resultsHTML(info.results);return}
+    if(info.used||done){app.innerHTML=h+'<div class="card"><p class="ok">Your ballot has been recorded. Thank you for voting.</p></div>';return}
+    h+='<p class="sub">Rank the candidates in order of preference. Tap a name to add it. You don’t have to rank everyone.</p><div class="card"><h2>Your ranking</h2>';
+    if(!ranking.length)h+='<p class="msg">Nothing ranked yet.</p>';
+    ranking.forEach(function(n,i){
+      h+='<div class="row"><span class="num">'+(i+1)+'</span><span class="name">'+esc(n)+'</span>'+
+      '<button class="sm" data-up="'+i+'"'+(i===0?' disabled':'')+' aria-label="Move up">↑</button>'+
+      '<button class="sm" data-dn="'+i+'"'+(i===ranking.length-1?' disabled':'')+' aria-label="Move down">↓</button>'+
+      '<button class="sm" data-rm="'+i+'" aria-label="Remove">✕</button></div>';
+    });
+    var left=info.candidates.filter(function(x){return ranking.indexOf(x)<0});
+    if(left.length){h+='<h2 style="margin-top:16px">Candidates</h2>';left.forEach(function(n,i){h+='<button class="cand" data-add="'+esc(n)+'">+ '+esc(n)+'</button>'})}
+    h+='<p class="err">'+esc(note)+'</p><button class="p" id="submit"'+(ranking.length&&!busy?'':' disabled')+'>Submit ballot</button>'+
+    '<p class="msg">Your ballot can’t be changed after you submit it.</p></div>';
+    app.innerHTML=h;
+    app.querySelectorAll('[data-add]').forEach(function(b){b.onclick=function(){ranking.push(b.getAttribute('data-add'));draw()}});
+    app.querySelectorAll('[data-rm]').forEach(function(b){b.onclick=function(){ranking.splice(+b.getAttribute('data-rm'),1);draw()}});
+    app.querySelectorAll('[data-up]').forEach(function(b){b.onclick=function(){var i=+b.getAttribute('data-up'),t=ranking[i];ranking[i]=ranking[i-1];ranking[i-1]=t;draw()}});
+    app.querySelectorAll('[data-dn]').forEach(function(b){b.onclick=function(){var i=+b.getAttribute('data-dn'),t=ranking[i];ranking[i]=ranking[i+1];ranking[i+1]=t;draw()}});
+    $('submit').onclick=async function(){
+      if(!confirm('Submit this ballot? You won’t be able to change it.'))return;
+      busy=true;note='';draw();
+      var s=await sb.rpc('cast_ballot',{p_code:code,p_ranking:ranking});
+      busy=false;
+      if(s.error)note='Couldn’t submit. Please try again.';
+      else if(s.data==='ok')done=true;
+      else if(s.data==='already_voted')info.used=true;
+      else if(s.data==='closed'){info.status='closed';info.results=null}
+      else note='That ballot wasn’t accepted. Please check it and try again.';
+      draw();
+    };
+  }
+  draw();
+}
+
+// ---------------- Admin ----------------
+async function admin(){
+  var elections=[],stats={},gen={},note='';
+  var sess=(await sb.auth.getSession()).data.session;
+  function loginView(){
+    app.innerHTML='<h1>Admin login</h1><div class="card"><input id="em" type="email" placeholder="Email" autocomplete="username">'+
+    '<input id="pw" type="password" placeholder="Password" autocomplete="current-password"><p class="err">'+esc(note)+'</p>'+
+    '<button class="p" id="go">Log in</button></div>';
+    $('go').onclick=async function(){
+      var r=await sb.auth.signInWithPassword({email:$('em').value.trim(),password:$('pw').value});
+      if(r.error){note='Login failed.';loginView();return}
+      note='';sess=r.data.session;load();
+    };
+  }
+  async function load(){
+    app.innerHTML='<p class="msg">Loading…</p>';
+    var r=await sb.from('elections').select('*').order('created_at',{ascending:false});
+    if(r.error){note='Couldn’t load elections: '+r.error.message;view();return}
+    elections=r.data;
+    for(var i=0;i<elections.length;i++){
+      var id=elections[i].id;
+      var a=await sb.from('voter_codes').select('*',{count:'exact',head:true}).eq('election_id',id);
+      var b=await sb.from('voter_codes').select('*',{count:'exact',head:true}).eq('election_id',id).eq('used',true);
+      stats[id]={codes:a.count||0,voted:b.count||0};
+    }
+    view();
+  }
+  function view(){
+    var h='<h1>Admin</h1><p class="sub"><button class="sm" id="out">Log out</button></p><p class="err">'+esc(note)+'</p>';
+    h+='<div class="card"><h2>New election</h2><input id="t" placeholder="Office, e.g. President (Spring 2027)">'+
+    '<p class="msg">Candidates, one per line</p><textarea id="c" rows="5"></textarea><button class="p" id="mk">Create election</button></div>';
+    elections.forEach(function(e){
+      var s=stats[e.id]||{codes:0,voted:0};
+      h+='<div class="card"><h2>'+esc(e.title)+'<span class="tag">'+e.status+'</span></h2>'+
+      '<p class="msg">'+esc(e.candidates.join(', '))+'<br>Turnout: '+s.voted+' of '+s.codes+' codes used</p>';
+      if(e.status==='open'){
+        h+='<p class="msg" style="margin-top:12px">Generate voter links: one name per line (names stay in your browser, not the database)</p>'+
+        '<textarea id="n-'+e.id+'" rows="4"></textarea><button data-gen="'+e.id+'">Generate links</button> '+
+        '<button class="p" data-close="'+e.id+'">Close and tally</button>';
+      }else h+=resultsHTML(e.results);
+      if(gen[e.id]){
+        h+='<div class="scroll" style="margin-top:12px"><table><tr><th>Name</th><th>Link</th></tr>';
+        gen[e.id].forEach(function(r){h+='<tr><td>'+esc(r.name)+'</td><td class="l">'+esc(r.link)+'</td></tr>'});
+        h+='</table></div><p><button data-csv="'+e.id+'">Download CSV</button></p><p class="msg">Download this now. Links can’t be recovered after you leave this page, though you can generate new ones.</p>';
+      }
+      h+='</div>';
+    });
+    app.innerHTML=h;
+    $('out').onclick=async function(){await sb.auth.signOut();note='';loginView()};
+    $('mk').onclick=create;
+    app.querySelectorAll('[data-gen]').forEach(function(b){b.onclick=function(){genCodes(b.getAttribute('data-gen'))}});
+    app.querySelectorAll('[data-close]').forEach(function(b){b.onclick=function(){closeEl(b.getAttribute('data-close'))}});
+    app.querySelectorAll('[data-csv]').forEach(function(b){b.onclick=function(){csv(b.getAttribute('data-csv'))}});
+  }
+  async function create(){
+    var cands=$('c').value.split('\n').map(function(x){return x.trim()}).filter(Boolean).filter(function(x,i,a){return a.indexOf(x)===i});
+    if(!$('t').value.trim()||cands.length<2){note='Add a title and at least two candidates.';view();return}
+    var r=await sb.from('elections').insert({title:$('t').value.trim(),candidates:cands});
+    note=r.error?r.error.message:'';load();
+  }
+  function makeCode(){
+    var al='ABCDEFGHJKMNPQRSTUVWXYZ23456789',a=new Uint32Array(8),s='';
+    crypto.getRandomValues(a);for(var i=0;i<8;i++)s+=al[a[i]%al.length];return s;
+  }
+  async function genCodes(id){
+    var names=$('n-'+id).value.split('\n').map(function(x){return x.trim()}).filter(Boolean);
+    if(!names.length){note='Enter at least one name.';view();return}
+    var base=location.origin+location.pathname;
+    var rows=names.map(function(n){return {name:n,code:makeCode()}});
+    var r=await sb.from('voter_codes').insert(rows.map(function(x){return {code:x.code,election_id:id}}));
+    if(r.error){note='Couldn’t save codes: '+r.error.message;view();return}
+    gen[id]=(gen[id]||[]).concat(rows.map(function(x){return {name:x.name,link:base+'?code='+x.code}}));
+    note='';load();
+  }
+  async function closeEl(id){
+    if(!confirm('Close voting and compute results? This can’t be undone.'))return;
+    var e=elections.filter(function(x){return x.id===id})[0];
+    var r=await sb.from('ballots').select('ranking').eq('election_id',id);
+    if(r.error){note=r.error.message;view();return}
+    var bs=r.data.map(function(b){return (b.ranking||[]).filter(function(n){return e.candidates.indexOf(n)>=0})});
+    var res=tally(bs,e.candidates);
+    var u=await sb.from('elections').update({status:'closed',results:res}).eq('id',id);
+    note=u.error?u.error.message:'';load();
+  }
+  function csv(id){
+    var q=function(s){return '"'+String(s).replace(/"/g,'""')+'"'};
+    var t='Name,Link\n'+gen[id].map(function(r){return q(r.name)+','+q(r.link)}).join('\n');
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));a.download='voter-links.csv';a.click();
+  }
+  if(sess)load();else loginView();
+}
+</script>
+</body>
+</html>
